@@ -644,30 +644,45 @@
       const waitSec = getRandomWait(); // 1, 2, atau 3
 
       try {
-        // Multi-API fallback (supaya lebih jarang gagal)
-        const apis = [
-          (u) => fetch('https://trw.lat/api/bypass?url=' + encodeURIComponent(u)).then(r => r.json()),
-          (u) => fetch('https://api.bypass.vip/bypass?url=' + encodeURIComponent(u)).then(r => r.json()),
-        ];
+        // Helper: fetch dengan timeout biar tidak hang
+        function fetchWithTimeout(resource, ms) {
+          const ctrl = new AbortController();
+          const id = setTimeout(() => ctrl.abort(), ms);
+          return fetch(resource, { signal: ctrl.signal })
+            .then(r => r.json())
+            .finally(() => clearTimeout(id));
+        }
 
+        function pickResult(data) {
+          if (!data) return null;
+          const url = data.result || data.direct || data.url || (data.data && data.data.result);
+          if (typeof url === 'string' && url.startsWith('http')) return url;
+          return null;
+        }
+
+        // Multi-API fallback + timeout
         const apiPromise = (async () => {
-          let lastErr = 'Semua API gagal';
-          for (const call of apis) {
+          const list = [
+            'https://trw.lat/api/bypass?url=' + encodeURIComponent(url),
+            'https://api.bypass.vip/bypass?url=' + encodeURIComponent(url),
+          ];
+          let lastErr = 'API sedang sibuk / down. Coba lagi beberapa saat.';
+
+          for (const endpoint of list) {
             try {
-              const data = await call(url);
-              const ok = data && (data.status === 'success' || data.success === true);
-              const resultUrl = data && (data.result || data.direct || data.url);
-              // Abaikan pesan shutdown / unsupported
-              if (ok && resultUrl && typeof resultUrl === 'string' && resultUrl.startsWith('http')) {
-                return { ok: true, resultUrl, data };
+              const data = await fetchWithTimeout(endpoint, 12000);
+              const resultUrl = pickResult(data);
+              if (resultUrl) {
+                return { ok: true, resultUrl };
               }
-              if (resultUrl && typeof resultUrl === 'string' && !resultUrl.startsWith('http')) {
-                lastErr = resultUrl;
-              } else if (data && (data.message || data.error)) {
-                lastErr = data.message || data.error;
+              // Ambil pesan error dari API
+              const msg = (data && (data.message || data.error || data.result)) || '';
+              if (typeof msg === 'string' && msg.length > 0 && msg.length < 200) {
+                lastErr = msg;
               }
             } catch (e) {
-              lastErr = e.message || 'Network error';
+              if (e.name === 'AbortError') lastErr = 'API timeout (terlalu lama). Coba lagi.';
+              else lastErr = e.message || 'Gagal koneksi ke API';
             }
           }
           return { ok: false, error: lastErr };
@@ -677,13 +692,11 @@
 
         const data = await apiPromise;
 
-        // Support both bypass.vip and trw.lat response formats
         const ok = data && data.ok;
         const resultUrl = data && data.resultUrl;
         if (ok && resultUrl) {
           currentResult = resultUrl;
 
-          // Update modal
           document.getElementById('modalTimer').textContent = '✓';
           document.getElementById('modalTimerLabel').textContent = 'Bypass berhasil!';
           document.getElementById('loadingText').textContent = 'Selesai';
@@ -702,26 +715,28 @@
             });
           };
 
-          // Show X close button
           document.getElementById('modalClose').classList.add('visible');
 
-          // Also update permanent result below
           const perm = document.getElementById('resultPermanent');
           perm.className = 'result-permanent success';
           perm.innerHTML = '<a href="' + resultUrl + '" target="_blank" rel="noopener">' + resultUrl + '</a>' +
-            '<button class="copy-btn" onclick="navigator.clipboard.writeText(\'' + resultUrl + '\')">Copy</button>';
+            '<button class="copy-btn" onclick="navigator.clipboard.writeText(\'' + resultUrl.replace(/'/g, "\\'") + '\')">Copy</button>';
 
           addUsage();
           showMsg('Bypass berhasil!', 'success');
           setStatus('Selesai');
         } else {
-          const errMsg = (data && data.error) || 'Gagal bypass link ini. API sedang bermasalah, coba lagi nanti.';
-          throw new Error(typeof errMsg === 'string' ? errMsg : 'Gagal bypass link ini');
+          const errMsg = (data && data.error) || 'Gagal bypass. API free lagi bermasalah, coba lagi nanti.';
+          throw new Error(errMsg);
         }
       } catch (err) {
         document.getElementById('modalTimer').textContent = '!';
-        document.getElementById('modalTimerLabel').textContent = 'Gagal';
-        document.getElementById('loadingText').textContent = err.message || 'Terjadi kesalahan';
+        document.getElementById('modalTimerLabel').textContent = 'Gagal bypass';
+        document.getElementById('loadingWrap').style.display = 'none';
+        document.getElementById('loadingText').textContent = '';
+        const resEl = document.getElementById('modalResult');
+        resEl.innerHTML = '<span style="color:#fca5a5">' + (err.message || 'Terjadi kesalahan') + '</span>';
+        resEl.classList.add('visible');
         document.getElementById('modalClose').classList.add('visible');
         showMsg(err.message || 'Terjadi kesalahan. Coba lagi.', 'error');
         setStatus('Gagal');
