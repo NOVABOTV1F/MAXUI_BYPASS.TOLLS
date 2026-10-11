@@ -644,16 +644,44 @@
       const waitSec = getRandomWait(); // 1, 2, atau 3
 
       try {
-        // Start API + countdown parallel
-        const apiPromise = fetch('https://api.bypass.vip/bypass?url=' + encodeURIComponent(url))
-          .then(r => r.json());
+        // Multi-API fallback (supaya lebih jarang gagal)
+        const apis = [
+          (u) => fetch('https://trw.lat/api/bypass?url=' + encodeURIComponent(u)).then(r => r.json()),
+          (u) => fetch('https://api.bypass.vip/bypass?url=' + encodeURIComponent(u)).then(r => r.json()),
+        ];
+
+        const apiPromise = (async () => {
+          let lastErr = 'Semua API gagal';
+          for (const call of apis) {
+            try {
+              const data = await call(url);
+              const ok = data && (data.status === 'success' || data.success === true);
+              const resultUrl = data && (data.result || data.direct || data.url);
+              // Abaikan pesan shutdown / unsupported
+              if (ok && resultUrl && typeof resultUrl === 'string' && resultUrl.startsWith('http')) {
+                return { ok: true, resultUrl, data };
+              }
+              if (resultUrl && typeof resultUrl === 'string' && !resultUrl.startsWith('http')) {
+                lastErr = resultUrl;
+              } else if (data && (data.message || data.error)) {
+                lastErr = data.message || data.error;
+              }
+            } catch (e) {
+              lastErr = e.message || 'Network error';
+            }
+          }
+          return { ok: false, error: lastErr };
+        })();
 
         await runCountdown(waitSec);
 
         const data = await apiPromise;
 
-        if (data && data.status === 'success' && data.result) {
-          currentResult = data.result;
+        // Support both bypass.vip and trw.lat response formats
+        const ok = data && data.ok;
+        const resultUrl = data && data.resultUrl;
+        if (ok && resultUrl) {
+          currentResult = resultUrl;
 
           // Update modal
           document.getElementById('modalTimer').textContent = '✓';
@@ -662,13 +690,13 @@
           document.getElementById('loadingWrap').style.display = 'none';
 
           const resEl = document.getElementById('modalResult');
-          resEl.innerHTML = '<a href="' + data.result + '" target="_blank" rel="noopener">' + data.result + '</a>';
+          resEl.innerHTML = '<a href="' + resultUrl + '" target="_blank" rel="noopener">' + resultUrl + '</a>';
           resEl.classList.add('visible');
 
           document.getElementById('modalActions').classList.add('visible');
-          document.getElementById('openBtn').onclick = () => window.open(data.result, '_blank');
+          document.getElementById('openBtn').onclick = () => window.open(resultUrl, '_blank');
           document.getElementById('copyBtn').onclick = () => {
-            navigator.clipboard.writeText(data.result).then(() => {
+            navigator.clipboard.writeText(resultUrl).then(() => {
               document.getElementById('copyBtn').textContent = 'Tersalin!';
               setTimeout(() => document.getElementById('copyBtn').textContent = 'Copy', 1500);
             });
@@ -680,14 +708,15 @@
           // Also update permanent result below
           const perm = document.getElementById('resultPermanent');
           perm.className = 'result-permanent success';
-          perm.innerHTML = '<a href="' + data.result + '" target="_blank" rel="noopener">' + data.result + '</a>' +
-            '<button class="copy-btn" onclick="navigator.clipboard.writeText(\'' + data.result + '\')">Copy</button>';
+          perm.innerHTML = '<a href="' + resultUrl + '" target="_blank" rel="noopener">' + resultUrl + '</a>' +
+            '<button class="copy-btn" onclick="navigator.clipboard.writeText(\'' + resultUrl + '\')">Copy</button>';
 
           addUsage();
           showMsg('Bypass berhasil!', 'success');
           setStatus('Selesai');
         } else {
-          throw new Error((data && data.message) ? data.message : 'Gagal bypass link ini');
+          const errMsg = (data && data.error) || 'Gagal bypass link ini. API sedang bermasalah, coba lagi nanti.';
+          throw new Error(typeof errMsg === 'string' ? errMsg : 'Gagal bypass link ini');
         }
       } catch (err) {
         document.getElementById('modalTimer').textContent = '!';
